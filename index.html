@@ -127,9 +127,6 @@ nav button.active{color:var(--navy-2);border-top-color:var(--navy-2)}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(78px + env(safe-area-inset-bottom,0px));background:var(--navy);color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;z-index:30;opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.show{opacity:1}
 .warn{color:var(--bad)}
-.card.shot{margin:0 0 12px}
-.card.shot .opt{margin-bottom:6px;font-size:14px}
-.card.shot .qimg{max-height:160px}
 button:disabled{opacity:.5}
 </style>
 </head>
@@ -184,17 +181,6 @@ function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e
 function applyTheme(){ const t=state.settings.theme; if(t==='auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme',t); }
 
 const byId = {}; QUESTIONS.forEach(q=>byId[q.id]=q);
-// Questions added from the phone live in extra.json on the site (and, until that copy
-// is published, in this phone's storage). They are merged in at start-up.
-function addToBank(list){
-  let n=0;
-  (list||[]).forEach(q=>{
-    if(!q || !q.id || byId[q.id]) return;
-    QUESTIONS.push(q); byId[q.id]=q; n++;
-    if(q.gloss) Object.entries(q.gloss).forEach(([w,t])=>{ const k=String(w).toLowerCase(); if(k && t && !GLOSSARY[k]) GLOSSARY[k]=t; });
-  });
-  return n;
-}
 function remaining(){ return QUESTIONS.filter(q=>!state.mastered[q.id]).map(q=>q.id); }
 function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
 function ensureQueue(){
@@ -431,7 +417,7 @@ function twoTap(btn, armedLabel, fn){ const orig=btn.textContent; let armed=fals
 function renderSettings(m){
   const total=QUESTIONS.length, done=Object.keys(state.mastered).filter(id=>byId[id]).length;
   const missed=Object.entries(state.misses).filter(([id])=>byId[id]).sort((a,b)=>b[1]-a[1]).slice(0,5);
-  m.innerHTML= addCardHTML()+
+  m.innerHTML=
     '<div class="card"><div class="kv"><span>Questions in archive file</span><b>'+total+'</b></div><div class="kv"><span>Archived (answered right)</span><b>'+done+'</b></div><div class="kv"><span>Still to practise</span><b>'+(total-done)+'</b></div><div class="kv"><span>Vocab words</span><b>'+state.vocab.length+'</b></div></div>'+
     (missed.length?'<div class="card"><div class="topic">Most missed</div>'+missed.map(([id,n])=>'<div class="kv"><span style="font-size:14px">'+esc(byId[id].q)+'</span><b>×'+n+'</b></div>').join('')+'</div>':'')+
     '<div class="card">'+
@@ -442,8 +428,6 @@ function renderSettings(m){
     '<div class="card"><div class="topic">Backup</div><div class="hint" style="margin:0 0 10px">Progress is saved in this browser only. Copy the backup text somewhere safe (Notes, a message to yourself) if you switch browser or device.</div><div class="row"><button class="btn" id="bExp">Copy backup</button><button class="btn" id="bImp">Restore from text</button></div></div>'+
     '<div class="card"><div class="topic">Reset</div><div class="row"><button class="btn" id="rQ">Put all questions back in practice</button><button class="btn danger" id="rAll">Erase everything</button></div></div>'+
     '<div class="hint">Works fully offline once open. On iPhone: open this page before the flight and leave the tab open, or use Share → Add to Home Screen.</div>';
-  $('#aPick').onclick=pickShots; $('#aSetup').onclick=setupSheet;
-  const as=$('#aSync'); if(as) as.onclick=()=>syncPending(false);
   $('#sTh').value=state.settings.theme;
   $('#sEn').onchange=e=>{ state.settings.alwaysEn=e.target.checked; save(); };
   $('#sSh').onchange=e=>{ state.settings.shuffle=e.target.checked; state.queue=null; state.pos=0; save(); };
@@ -454,293 +438,11 @@ function renderSettings(m){
   twoTap($('#rAll'), 'Tap again to erase everything', ()=>{ try{ localStorage.removeItem(KEY); }catch(e){} state=load(); current=null; toast('Erased'); render(); });
 }
 
-// ---------- adding questions from screenshots ----------
-const PENDING_KEY='teorica_pending_v1', SECRETS_KEY='teorica_keys_v1';
-const REPO='LucindaBeeson/teorica-de6d39', BRANCH='main';
-const GH_URL='https://api.github.com/repos/'+REPO+'/contents/extra.json';
-const MODEL='claude-opus-5-5';
-const TOPICS=['Senyals','Vehicle','Seguretat','Circulació','Documentació','Enllumenat','Prioritat','Avançaments','Velocitat','Vianants i ciclistes','Alcohol i drogues','Estacionament'];
-function readJSON(k,d){ try{ const v=JSON.parse(localStorage.getItem(k)||'null'); return v==null?d:v; }catch(e){ return d; } }
-function pending(){ return readJSON(PENDING_KEY, []); }
-function savePending(p){ try{ localStorage.setItem(PENDING_KEY, JSON.stringify(p)); return true; }catch(e){ toast('Phone storage is full'); return false; } }
-function secrets(){ return readJSON(SECRETS_KEY, {}); }   // kept apart from progress so backups never contain them
-function saveSecrets(s){ try{ localStorage.setItem(SECRETS_KEY, JSON.stringify(s)); }catch(e){} }
-addToBank(pending());
-
-function loadExtras(){
-  if(!/^https?:/.test(location.protocol)) return Promise.resolve(0);
-  return fetch('extra.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>{
-    const list=(d&&d.questions)||[]; const n=addToBank(list);
-    const published=new Set(list.map(q=>q.id));
-    const p=pending(), left=p.filter(q=>!published.has(q.id));
-    if(left.length!==p.length) savePending(left);
-    return n;
-  }).catch(()=>0);
-}
-
-// text matching, used to spot questions that are already in the bank
-function plain(s){ return String(s||'').normalize('NFKD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
-function sim(a,b){
-  if(a===b) return 1; if(a.length<2||b.length<2) return 0;
-  const g=s=>{ const m=new Map(); for(let i=0;i<s.length-1;i++){ const k=s.slice(i,i+2); m.set(k,(m.get(k)||0)+1); } return m; };
-  const A=g(a), B=g(b); let hit=0; A.forEach((v,k)=>{ hit+=Math.min(v,B.get(k)||0); });
-  return 2*hit/(a.length+b.length-2);
-}
-function findExisting(item){
-  const nq=plain(item.q), no=item.opts.map(plain);
-  let best=null;
-  for(const q of QUESTIONS){
-    const qs=sim(nq,plain(q.q)); if(qs<0.9) continue;
-    const po=q.opts.map(plain);
-    const pair=no.map(o=>{ let bj=0,bs=-1; po.forEach((p,j)=>{ const s=sim(o,p); if(s>bs){bs=s;bj=j;} }); return [bj,bs]; });
-    const os=pair.reduce((t,x)=>t+x[1],0)/Math.max(no.length,1);
-    if(os>=0.85 && (!best || qs+os>best.score)) best={q, score:qs+os, sameAnswer: item.ans==null || (pair[item.ans]&&pair[item.ans][0]===q.ans)};
-  }
-  return best;
-}
-
-// images
-function loadImg(file){ return new Promise((res,rej)=>{ const u=URL.createObjectURL(file); const im=new Image(); im.onload=()=>res(im); im.onerror=()=>rej(new Error('Could not open that image')); im.src=u; }); }
-function canvasOf(w,h){ const c=document.createElement('canvas'); c.width=Math.max(1,Math.round(w)); c.height=Math.max(1,Math.round(h)); return c; }
-function forClaude(im){
-  const k=Math.min(1, 1568/Math.max(im.naturalWidth, im.naturalHeight));
-  const c=canvasOf(im.naturalWidth*k, im.naturalHeight*k); c.getContext('2d').drawImage(im,0,0,c.width,c.height);
-  return c.toDataURL('image/jpeg',0.85).split(',')[1];
-}
-function cropPicture(im, box){
-  if(!box) return '';
-  const W=im.naturalWidth, H=im.naturalHeight;
-  let x0=Math.max(0,Math.floor(box.left*W)), y0=Math.max(0,Math.floor(box.top*H)), x1=Math.min(W,Math.ceil(box.right*W)), y1=Math.min(H,Math.ceil(box.bottom*H));
-  if(x1-x0<20||y1-y0<20) return '';
-  const c=canvasOf(x1-x0,y1-y0), g=c.getContext('2d'); g.drawImage(im,x0,y0,c.width,c.height,0,0,c.width,c.height);
-  const d=g.getImageData(0,0,c.width,c.height).data, w=c.width, h=c.height;
-  const px=(x,y)=>{ const i=(y*w+x)*4; return [d[i],d[i+1],d[i+2]]; };
-  const white=p=>p[0]>235&&p[1]>235&&p[2]>235;
-  const light=p=>Math.min(p[0],p[1],p[2])>140 && Math.max(p[0],p[1],p[2])-Math.min(p[0],p[1],p[2])<100;  // white or the pale frame line
-  const rowShare=(y,f,a,b)=>{ let n=0; for(let x=a;x<b;x++) if(f(px(x,y))) n++; return n/Math.max(1,b-a); };
-  const colShare=(x,f,a,b)=>{ let n=0; for(let y=a;y<b;y++) if(f(px(x,y))) n++; return n/Math.max(1,b-a); };
-  let t=0,b=h,l=0,r=w; const edge=Math.round(Math.min(w,h)*0.04);
-  const bg=(i,lim)=> (p)=>white(p) || (i<lim && light(p));
-  // shave white margins, and pale frame lines close to the edge
-  while(t<b-10 && rowShare(t, bg(t,edge), l, r)>0.94) t++;
-  while(b>t+10 && rowShare(b-1, bg(h-b,edge), l, r)>0.94) b--;
-  while(l<r-10 && colShare(l, bg(l,edge), t, b)>0.94) l++;
-  while(r>l+10 && colShare(r-1, bg(w-r,edge), t, b)>0.94) r--;
-  const k=Math.min(1, 520/(r-l)); const o=canvasOf((r-l)*k,(b-t)*k);
-  const og=o.getContext('2d'); og.fillStyle='#fff'; og.fillRect(0,0,o.width,o.height); og.drawImage(c,l,t,r-l,b-t,0,0,o.width,o.height);
-  return o.toDataURL('image/jpeg',0.6);
-}
-
-// Claude reads one screenshot
-const SHOT_SCHEMA={type:'object',additionalProperties:false,required:['questions'],properties:{questions:{type:'array',items:{type:'object',additionalProperties:false,
-  required:['q','opts','marked_answer','best_answer','chosen','topic','en','imgDesc','picture','glossary','note'],
-  properties:{
-    q:{type:'string'}, opts:{type:'array',items:{type:'string'}},
-    marked_answer:{anyOf:[{type:'integer'},{type:'null'}]}, best_answer:{type:'integer'}, chosen:{anyOf:[{type:'integer'},{type:'null'}]},
-    topic:{type:'string',enum:TOPICS},
-    en:{type:'object',additionalProperties:false,required:['q','opts'],properties:{q:{type:'string'},opts:{type:'array',items:{type:'string'}}}},
-    imgDesc:{type:'string'},
-    picture:{anyOf:[{type:'null'},{type:'object',additionalProperties:false,required:['left','top','right','bottom'],properties:{left:{type:'number'},top:{type:'number'},right:{type:'number'},bottom:{type:'number'}}}]},
-    glossary:{type:'array',items:{type:'object',additionalProperties:false,required:['w','t'],properties:{w:{type:'string'},t:{type:'string'}}}},
-    note:{type:'string'}
-  }}}}};
-const SHOT_PROMPT=[
-  'This is a screenshot (or a photo of a screen) from the Autoescola URBI online driving-theory test for Andorra, in Catalan.',
-  'Each question page shows "PREGUNTA n", a picture in a thin frame, the question text and options A, B, C.',
-  'In review mode the correct option row is green and the option the learner wrongly picked is pink. If no row is coloured, the question was not answered.',
-  'Return every question you can see (normally one; none if the image shows no question).',
-  'q and opts: copy the Catalan text exactly as shown, character for character: keep capitals, accents, apostrophes, punctuation and any spelling mistakes. Do not include the letters A/B/C.',
-  'marked_answer: index (0 = A) of the green row, or null. chosen: index of the pink row, or null.',
-  'best_answer: the green row if there is one; otherwise your best answer under Andorran and Spanish traffic rules.',
-  'note: empty, unless there was no green row (say the answer is your best judgement) or something is uncertain; one short English sentence.',
-  'en: natural English translations of the question and each option. imgDesc: one short English sentence describing the picture.',
-  'picture: the question picture as fractions of the whole image width and height (0 to 1), just inside its thin frame; null if the question has no picture.',
-  'glossary: each distinct word of the question and options, lower-case as it appears, with a short English meaning in this context.'
-].join('\n');
-async function readShot(key, b64){
-  const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{
-      'content-type':'application/json','x-api-key':key,'anthropic-version':'2026-10-21',
-      'anthropic-beta':'server-side-fallback-2026-07-01','anthropic-dangerous-direct-browser-access':'true'},
-    body:JSON.stringify({model:MODEL, max_tokens:16000, fallbacks:'default',
-      output_config:{effort:'medium', format:{type:'json_schema', schema:SHOT_SCHEMA}},
-      messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:'image/jpeg',data:b64}},{type:'text',text:SHOT_PROMPT}]}]})});
-  const j=await r.json().catch(()=>null);
-  if(!r.ok){ const m=j&&j.error&&j.error.message||('HTTP '+r.status); throw new Error(r.status===401?'The Claude API key was not accepted':m); }
-  if(j.stop_reason==='refusal') throw new Error('Claude declined to read this image');
-  if(j.stop_reason==='max_tokens') throw new Error('The reply was cut short');
-  const t=(j.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('');
-  return JSON.parse(t).questions||[];
-}
-
-// GitHub: questions are appended to extra.json in the site's repository
-function utf8ToB64(s){ const b=new TextEncoder().encode(s); let out=''; for(let i=0;i<b.length;i+=0x8000) out+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000)); return btoa(out); }
-function b64ToUtf8(s){ const bin=atob(s.replace(/\s/g,'')); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return new TextDecoder().decode(u); }
-function ghHeaders(tok,raw){ return {Authorization:'Bearer '+tok, Accept: raw?'application/vnd.github.raw+json':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}; }
-async function ghRead(tok){
-  const u=GH_URL+'?ref='+BRANCH+'&t='+Date.now();
-  const r=await fetch(u,{headers:ghHeaders(tok),cache:'no-store'});
-  if(r.status===404) return {sha:null, data:{questions:[]}};
-  if(r.status===401||r.status===403) throw new Error('The GitHub token was not accepted');
-  if(!r.ok) throw new Error('GitHub '+r.status);
-  const meta=await r.json(); let text=meta.encoding==='base64'&&meta.content ? b64ToUtf8(meta.content) : '';
-  if(!text){ const r2=await fetch(u,{headers:ghHeaders(tok,true),cache:'no-store'}); if(!r2.ok) throw new Error('GitHub '+r2.status); text=await r2.text(); }
-  let data; try{ data=JSON.parse(text); }catch(e){ data={questions:[]}; }
-  if(!data || !Array.isArray(data.questions)) data={questions:[]};
-  return {sha:meta.sha, data};
-}
-let syncing=false;
-async function syncPending(quiet){
-  const tok=secrets().github; if(syncing || !tok || !navigator.onLine) return;
-  let todo=pending().filter(q=>!q._synced); if(!todo.length) return;
-  syncing=true;
-  try{
-    for(let attempt=0; attempt<4; attempt++){
-      const {sha,data}=await ghRead(tok);
-      const have=new Set(data.questions.map(q=>q.id));
-      const add=todo.filter(q=>!have.has(q.id)).map(q=>{ const c=Object.assign({},q); delete c._synced; return c; });
-      if(add.length){
-        data.questions=data.questions.concat(add);
-        const body={message:'Add '+add.length+' question'+(add.length>1?'s':'')+' from the phone', content:utf8ToB64(JSON.stringify(data)), branch:BRANCH};
-        if(sha) body.sha=sha;
-        const r=await fetch(GH_URL,{method:'PUT',headers:Object.assign({'Content-Type':'application/json'},ghHeaders(tok)),body:JSON.stringify(body)});
-        if(r.status===409||r.status===422){ continue; }   // someone else saved first: read again and retry
-        if(r.status===401||r.status===403) throw new Error('The GitHub token was not accepted');
-        if(!r.ok) throw new Error('GitHub '+r.status);
-      }
-      const done=new Set(todo.map(q=>q.id));
-      savePending(pending().map(q=>done.has(q.id)?Object.assign(q,{_synced:true}):q));
-      if(!quiet) toast('Saved to the shared question bank');
-      return;
-    }
-    throw new Error('GitHub kept changing, try again');
-  }catch(e){ if(!quiet) toast('Upload failed: '+e.message); }
-  finally{ syncing=false; if(tab==='settings') render(); }
-}
-window.addEventListener('online',()=>syncPending(true));
-
-// the flow: choose screenshots → Claude reads them → review → add
-function pickShots(){
-  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*'; inp.multiple=true;
-  inp.onchange=()=>{ const files=[...inp.files]; if(files.length) processShots(files); };
-  inp.click();
-}
-async function processShots(files){
-  const key=secrets().anthropic;
-  const found=[]; let done=0;
-  const paint=()=>openSheet('<h2>Reading screenshots</h2><div class="sub">'+done+' of '+files.length+' done. Keep the app open.</div><div class="progress"><i style="width:'+Math.round(100*done/files.length)+'%"></i></div>');
-  paint();
-  const work=files.map((f,i)=>({f,i}));
-  async function worker(){
-    while(work.length){
-      const {f,i}=work.shift();
-      try{
-        const im=await loadImg(f);
-        const qs=await readShot(key, forClaude(im));
-        if(!qs.length) found.push({i, err:'No question found in this image'});
-        qs.forEach(x=>{
-          const n=Math.min(x.opts.length, 5);
-          const ans=(x.marked_answer!=null && x.marked_answer<n) ? x.marked_answer : null;
-          const item={q:x.q.trim(), opts:x.opts.slice(0,n).map(s=>s.trim()), ans: ans!=null?ans:Math.max(0,Math.min(n-1,x.best_answer)),
-            unconfirmed: ans==null, topic:x.topic, en:{q:x.en.q, opts:x.en.opts.slice(0,n)}, imgDesc:x.imgDesc,
-            img: cropPicture(im, x.picture), note: (x.note||'').trim(), gloss:{}};
-          (x.glossary||[]).forEach(g=>{ if(g.w&&g.t) item.gloss[g.w.toLowerCase()]=g.t; });
-          found.push({i, item});
-        });
-        URL.revokeObjectURL(im.src);
-      }catch(e){ found.push({i, err:e.message||String(e)}); }
-      done++; paint();
-    }
-  }
-  await Promise.all([worker(),worker(),worker()]);
-  found.sort((a,b)=>a.i-b.i);
-  // same question twice in this batch: keep the first
-  const seenHere=[];
-  found.forEach(r=>{
-    if(!r.item) return;
-    const ex=findExisting(r.item);
-    if(ex){ r.existing=ex.q; r.sameAnswer=ex.sameAnswer; return; }
-    const twin=seenHere.find(o=>sim(plain(o.q),plain(r.item.q))>0.95 && o.opts.map(plain).join('|')===r.item.opts.map(plain).join('|'));
-    if(twin){ r.twin=true; if(twin.unconfirmed && !r.item.unconfirmed){ twin.ans=r.item.ans; twin.unconfirmed=false; } return; }
-    r.include=true; seenHere.push(r.item);
-  });
-  reviewShots(found);
-}
-function reviewShots(found){
-  const fresh=found.filter(r=>r.item&&!r.existing&&!r.twin), again=found.filter(r=>r.existing), bad=found.filter(r=>r.err);
-  const card=(r,k)=>{
-    const q=r.item;
-    return '<div class="card shot" data-k="'+k+'">'+
-      '<label class="toggle" style="padding:0 0 8px;border:0"><span class="topic" style="margin:0">'+esc(q.topic)+(q.unconfirmed?' · <b class="warn">answer not marked</b>':'')+'</span><input type="checkbox" data-inc '+(r.include?'checked':'')+'></label>'+
-      (q.img?'<img class="qimg" src="'+q.img+'" alt="">':'')+
-      '<p class="qtext" style="font-size:15px">'+esc(q.q)+'</p>'+
-      q.opts.map((o,i)=>'<button class="opt'+(i===q.ans?' correct':'')+'" data-a="'+i+'"><span class="letter">'+LETTERS[i]+'</span><span class="body">'+esc(o)+'</span></button>').join('')+
-      (q.unconfirmed?'<div class="hint">No green row in this screenshot. Claude picked '+LETTERS[q.ans]+'; tap another option to change it.</div>':'')+
-      (q.note&&!q.unconfirmed?'<div class="hint">'+esc(q.note)+'</div>':'')+
-    '</div>';
-  };
-  const items=found.filter(r=>r.item&&!r.existing&&!r.twin);
-  openSheet('<h2>'+(fresh.length?fresh.length+' new question'+(fresh.length>1?'s':''):'No new questions')+'</h2>'+
-    '<div class="sub">'+[again.length?again.length+' already in your bank (they go back to the front of your practice pile)':'', bad.length?bad.length+' could not be read':''].filter(Boolean).join(' · ')+'</div>'+
-    items.map((r,k)=>card(r,k)).join('')+
-    bad.map(r=>'<div class="hint">Image '+(r.i+1)+': '+esc(r.err)+'</div>').join('')+
-    again.filter(r=>!r.sameAnswer).map(r=>'<div class="hint">Image '+(r.i+1)+' matches #'+esc(r.existing.id)+' but the green answer differs. Kept the existing answer.</div>').join('')+
-    '<div class="row"><button class="btn" id="shCancel">Cancel</button><button class="btn primary" id="shAdd">'+(fresh.length?'Add to my questions':'Done')+'</button></div>');
-  const sheet=$('#sheet');
-  sheet.querySelectorAll('.shot').forEach(el=>{
-    const r=items[+el.dataset.k];
-    el.querySelector('[data-inc]').onchange=e=>{ r.include=e.target.checked; };
-    el.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>{ r.item.ans=+b.dataset.a; el.querySelectorAll('[data-a]').forEach(x=>x.classList.toggle('correct',x===b)); });
-  });
-  $('#shCancel').onclick=closeSheet;
-  $('#shAdd').onclick=()=>{
-    const stamp=Date.now().toString(36), today=new Date().toISOString().slice(0,10);
-    const add=items.filter(r=>r.include).map((r,k)=>Object.assign({id:'u'+stamp+k, added:today, src:'phone'}, r.item));
-    add.forEach(q=>{ if(!q.img) delete q.img; if(!q.note || q.unconfirmed) delete q.note; if(!q.unconfirmed) delete q.unconfirmed; });
-    const ok = !add.length || savePending(pending().concat(add));
-    if(!ok) return;
-    addToBank(add);
-    // ones already in the bank: he got them wrong again, so bring them back to the front
-    ensureQueue();
-    again.forEach(r=>{ const id=r.existing.id; delete state.mastered[id]; state.queue=state.queue.filter(x=>x!==id); state.queue.splice(state.pos,0,id); });
-    ensureQueue(); save(); current=null; closeSheet();
-    const parts=[add.length?add.length+' added':'', again.length?again.length+' moved to the front':''].filter(Boolean);
-    toast(parts.length?parts.join(', '):'Nothing to add');
-    render();
-    if(add.length) syncPending(false);
-  };
-}
-function setupSheet(){
-  const s=secrets();
-  openSheet('<h2>Set up adding questions</h2>'+
-    '<div class="sub">These are saved on this phone only and never included in backups.</div>'+
-    '<label>Claude API key</label><input id="kA" type="password" autocomplete="off" placeholder="sk-ant-…" value="'+esc(s.anthropic||'')+'">'+
-    '<label>GitHub token (saves new questions to the shared bank)</label><input id="kG" type="password" autocomplete="off" placeholder="github_pat_…" value="'+esc(s.github||'')+'">'+
-    '<div class="row"><button class="btn" id="kClear">Remove both</button><button class="btn primary" id="kSave">Save</button></div>');
-  $('#kSave').onclick=()=>{ saveSecrets({anthropic:$('#kA').value.trim(), github:$('#kG').value.trim()}); closeSheet(); toast('Saved'); render(); syncPending(true); };
-  $('#kClear').onclick=()=>{ saveSecrets({}); closeSheet(); toast('Removed'); render(); };
-}
-function addCardHTML(){
-  const s=secrets(), online=navigator.onLine, ready=!!s.anthropic, wait=pending().filter(q=>!q._synced).length;
-  return '<div class="card"><div class="topic">Add questions</div>'+
-    '<div class="hint" style="margin:0 0 10px">Got questions wrong on the URBI site? Pick the screenshots and Claude will read them. New ones are added to your practice pile and saved to the shared bank.</div>'+
-    (wait?'<div class="hint warn" style="margin:0 0 10px">'+wait+' added question'+(wait>1?'s are':' is')+' waiting to upload to the shared bank'+(online?'':' (offline)')+'.</div>':'')+
-    '<div class="row">'+
-      '<button class="btn primary" id="aPick" '+(online&&ready?'':'disabled')+'>📷 Choose screenshots</button>'+
-      (wait&&online&&s.github?'<button class="btn" id="aSync">Upload now</button>':'')+
-      '<button class="btn" id="aSetup">'+(ready?'Keys':'Set up')+'</button>'+
-    '</div>'+
-    (!online?'<div class="hint">Needs an internet connection.</div>':!ready?'<div class="hint">Add a Claude API key first (Set up).</div>':'')+
-  '</div>';
-}
-
 // ---------- offline (best effort) ----------
 if('serviceWorker' in navigator && /^https?:/.test(location.protocol)){ navigator.serviceWorker.register('sw.js').then(r=>{ r.addEventListener('updatefound',()=>{ const w=r.installing; w&&w.addEventListener('statechange',()=>{ if(w.state==='activated' && navigator.serviceWorker.controller) toast('Update downloaded. Reopen the app to use it.'); }); }); }).catch(()=>{}); }
 
 window.addEventListener('resize',()=>{ if(tab==='practice') fitToScreen(); });
-window.addEventListener('online',()=>{ if(tab==='settings') render(); });
-window.addEventListener('offline',()=>{ if(tab==='settings') render(); });
 render();
-loadExtras().then(n=>{ if(n){ if(tab==='practice' && !answered) render(); else updateStats(); } syncPending(true); });
 })();
 </script>
 </body>
